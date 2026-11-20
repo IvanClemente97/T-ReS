@@ -73,6 +73,16 @@ def _text(value: Any, *, maximum_length: int = 96) -> str | None:
     return cleaned
 
 
+def _team_color(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
+        raise TelemetryValidationError("Team color must use #RRGGBB format.")
+    if any(character not in "0123456789abcdefABCDEF" for character in value[1:]):
+        raise TelemetryValidationError("Team color must use #RRGGBB format.")
+    return value.upper()
+
+
 def _availability(value: Any) -> Availability:
     if value is None:
         return Availability.UNAVAILABLE
@@ -158,12 +168,20 @@ class CarTelemetry:
     is_player: bool
     driver_name: str | None
     car_name: str | None
+    display_name: str | None
     lap_count: int | None
     official_position: int | None
     realtime_position: int | None
     best_lap_time_ms: int | None
+    finished: bool | None
     world_x: float | None
     world_z: float | None
+    track_position: float | None
+    speed_kmh: float | None
+    brand: str | None
+    vehicle_class: str | None
+    team_name: str | None
+    team_color: str | None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> CarTelemetry:
@@ -175,20 +193,31 @@ class CarTelemetry:
         car_id = _integer(raw.get("car_id"), minimum=0, maximum=MAX_CARS - 1)
         if car_id is None:
             raise TelemetryValidationError("Car ID is unavailable.")
+        finished = raw.get("finished")
+        if finished is not None and not isinstance(finished, bool):
+            raise TelemetryValidationError("Car finished must be boolean when available.")
         return cls(
             car_id=car_id,
             source=source,
             is_player=raw["is_player"],
             driver_name=_text(raw.get("driver_name")),
             car_name=_text(raw.get("car_name")),
+            display_name=_text(raw.get("display_name")),
             lap_count=_integer(raw.get("lap_count"), minimum=0, maximum=10000),
             official_position=_integer(raw.get("official_position"), minimum=1, maximum=MAX_CARS),
             realtime_position=_integer(raw.get("realtime_position"), minimum=1, maximum=MAX_CARS),
             best_lap_time_ms=_integer(
                 raw.get("best_lap_time_ms"), minimum=0, maximum=600000
             ),
+            finished=finished,
             world_x=_number(raw.get("world_x"), minimum=-100000, maximum=100000),
             world_z=_number(raw.get("world_z"), minimum=-100000, maximum=100000),
+            track_position=_number(raw.get("track_position"), minimum=0, maximum=1),
+            speed_kmh=_number(raw.get("speed_kmh"), minimum=0, maximum=600),
+            brand=_text(raw.get("brand"), maximum_length=64),
+            vehicle_class=_text(raw.get("vehicle_class"), maximum_length=32),
+            team_name=_text(raw.get("team_name"), maximum_length=96),
+            team_color=_team_color(raw.get("team_color")),
         )
 
 

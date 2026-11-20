@@ -16,7 +16,7 @@ estén disponibles allí.
 
 | Simulador | Adaptador | Datos / requisitos | Validación en juego |
 | --- | --- | --- | --- |
-| Assetto Corsa original (2014) | Implementado | Shared Memory para el jugador; app Python T-ReS para rivales, posiciones y clasificación | Validado en vivo en Linux/Proton |
+| Assetto Corsa original (2014) | Implementado | Shared Memory para el jugador; app Python T-ReS para rivales, posiciones, clasificación y metadatos locales de coche | Validado en vivo en Linux/Proton |
 | Assetto Corsa Competizione | No implementado | Pendiente verificar protocolo, versión, configuración y cobertura de campos | No disponible |
 | F1 25 | No implementado | Pendiente verificar versión de paquetes y opciones UDP del juego | No disponible |
 | F1 26 | No implementado | Pendiente verificar protocolo y versión concretos del juego | No disponible |
@@ -27,3 +27,8 @@ decodificador contra un protocolo documentado. Antes de validar una sesión
 real, se marcarán como no verificados en juego. Si un protocolo no expone
 posiciones mundiales, tiempos de todos los pilotos o geometría compatible, la
 vista correspondiente indicará que no está disponible en vez de estimarla.
+
+Assetto Corsa solo aporta el color de escudería si el archivo de skin lo
+declara explícitamente; la instalación estándar no suele incluirlo. Los colores
+de equipos F1 25/26 y los estados de doblaje específicos de otros simuladores
+dependen de sus adaptadores, que aún no están implementados.

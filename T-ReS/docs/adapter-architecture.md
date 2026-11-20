@@ -15,6 +15,15 @@ matriz no crea una fuente simulada ni la hace aparecer en el selector.
   explícitas del modelo. Los campos ausentes permanecen `None`.
 - Cada coche puede incluir posición, piloto, vuelta y coordenadas del circuito.
   Solo se dibujan posiciones y clasificación entregadas por el juego.
+- La clasificación visual por categoría usa `vehicle_class`; la identidad
+  opcional puede incluir `brand`, `team_name` y `team_color` (`#RRGGBB`).
+  `track_position` y `speed_kmh` por coche permiten evaluar proximidad de
+  doblaje. Si faltan los metadatos de clase/equipo, el mapa conserva un color
+  neutral y no los inventa.
+- El aro azul indica que el coche tiene menos vueltas completadas que el
+  jugador. El aro verde lima solo se activa para un coche con más vueltas,
+  situado cerca detrás en la posición normalizada y a mayor velocidad; es una
+  heurística, no una estimación exacta de distancia o tiempo hasta el doblaje.
 - Las vueltas restantes requieren un total de vueltas comunicado por la
   sesión. La vuelta rápida requiere tiempos válidos para toda la parrilla.
 - Los colores de sectores se asignan solo con tiempos reales y referencias

@@ -97,6 +97,51 @@ class TelemetryProtocolTests(unittest.TestCase):
             "assetto_corsa_shared_memory", "assetto_corsa_python_api"
         }))
 
+    def test_optional_car_metadata_is_validated_and_missing_metadata_stays_empty(self):
+        payload = json.loads(snapshot_payload())
+        payload["cars"][0].update({
+            "track_position": 0.25,
+            "speed_kmh": 140.0,
+            "display_name": "Ferrari SF15-T",
+            "finished": False,
+            "brand": "Ferrari",
+            "vehicle_class": "GT3",
+            "team_name": "Scuderia Ferrari",
+            "team_color": "#C8102E",
+        })
+
+        car = parse_snapshot(json.dumps(payload), now=1000.0).cars[0]
+        self.assertEqual(car.track_position, 0.25)
+        self.assertEqual(car.speed_kmh, 140.0)
+        self.assertEqual(car.display_name, "Ferrari SF15-T")
+        self.assertIs(car.finished, False)
+        self.assertEqual(car.brand, "Ferrari")
+        self.assertEqual(car.vehicle_class, "GT3")
+        self.assertEqual(car.team_name, "Scuderia Ferrari")
+        self.assertEqual(car.team_color, "#C8102E")
+
+        del payload["cars"][0]["team_color"]
+        self.assertIsNone(parse_snapshot(json.dumps(payload), now=1000.0).cars[0].team_color)
+
+    def test_optional_display_name_and_finished_state_are_validated(self):
+        payload = json.loads(snapshot_payload())
+        payload["cars"][0]["finished"] = "finished"
+
+        with self.assertRaisesRegex(TelemetryValidationError, "finished must be boolean"):
+            parse_snapshot(json.dumps(payload), now=1000.0)
+
+        payload["cars"][0]["finished"] = True
+        car = parse_snapshot(json.dumps(payload), now=1000.0).cars[0]
+        self.assertIs(car.finished, True)
+        self.assertIsNone(car.display_name)
+
+    def test_invalid_team_color_is_rejected(self):
+        payload = json.loads(snapshot_payload())
+        payload["cars"][0]["team_color"] = "red"
+
+        with self.assertRaisesRegex(TelemetryValidationError, "#RRGGBB"):
+            parse_snapshot(json.dumps(payload), now=1000.0)
+
     def test_common_parser_accepts_other_simulator_ids_but_adapter_can_pin_one(self):
         payload = json.loads(snapshot_payload())
         payload["simulator"] = "f1_25"

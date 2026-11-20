@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -26,6 +27,7 @@ _last_sector = None
 _last_track_key = None
 _personal_best_sectors = [None] * 16
 _sector_colors = [None] * 16
+_vehicle_metadata_cache = {}
 
 
 def _log_limited(key, message, interval=10.0):
@@ -73,6 +75,29 @@ def _integer(value, low=None, high=None):
     return result
 
 
+def _boolean(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, float) and value in (0.0, 1.0):
+        return bool(value)
+    return None
+
+
+def _lap_time_ms(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric) or not numeric.is_integer():
+        return None
+    result = int(numeric)
+    return result if 0 < result <= 600000 else None
+
+
 def _car_value(car_id, state_name):
     state = getattr(acsys.CS, state_name, None)
     if state is None:
@@ -105,6 +130,141 @@ def _position(car_id, method_name):
         return _integer(method(car_id), 1, MAX_CARS)
     except Exception:
         return None
+
+
+def _read_json(path):
+    try:
+        with open(path, "r") as source:
+            payload = source.read()
+    except (IOError, OSError, UnicodeError) as error:
+        _log_limited("metadata-read", "could not read metadata %s: %s" % (path, error))
+        return {}
+    try:
+        value = json.loads(payload)
+    except ValueError:
+        try:
+            value = json.loads(_escape_newlines_in_strings(payload))
+        except ValueError as error:
+            _log_limited(
+                "metadata-invalid-" + path,
+                "invalid metadata JSON %s: %s" % (path, error),
+            )
+            return {}
+    if not isinstance(value, dict):
+        _log_limited("metadata-shape", "metadata is not an object: %s" % path)
+        return {}
+    return value
+
+
+def _escape_newlines_in_strings(payload):
+    output = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(payload):
+        character = payload[index]
+        if in_string:
+            if escaped:
+                output.append(character)
+                escaped = False
+            elif character == "\\":
+                output.append(character)
+                escaped = True
+            elif character == '"':
+                output.append(character)
+                in_string = False
+            elif character in "\r\n":
+                if (
+                    character == "\r"
+                    and index + 1 < len(payload)
+                    and payload[index + 1] == "\n"
+                ):
+                    index += 1
+                output.append("\\n")
+            elif ord(character) < 32:
+                output.append("\\t" if character == "\t" else " ")
+            else:
+                output.append(character)
+        else:
+            output.append(character)
+            if character == '"':
+                in_string = True
+        index += 1
+    return "".join(output)
+
+
+def _vehicle_category(car_data):
+    tags = car_data.get("tags", [])
+    if not isinstance(tags, list):
+        tags = []
+    description = " ".join(
+        [str(car_data.get("class", ""))] + [str(tag) for tag in tags]
+    ).upper()
+    for pattern, category in (
+        (r"\bLMP[123]?\b", None),
+        (r"\bGT[1-4]\b", None),
+        (r"\bTCR\b", "TCR"),
+        (r"\bFORMULA\s*1\b|\bF1\b", "F1"),
+    ):
+        match = re.search(pattern, description)
+        if match:
+            return match.group(0).replace(" ", "") if category is None else category
+    if "SINGLESEATER" in description or "SINGLE-SEATER" in description:
+        return "Single-seater"
+    value = _text(car_data.get("class"))
+    if value and value.lower() not in ("race", "street", "road", "car"):
+        return value
+    return None
+
+
+def _vehicle_metadata(car_id, car_name):
+    if not car_name or not re.match(r"^[A-Za-z0-9_-]+$", car_name):
+        return {}
+    get_skin = getattr(ac, "getCarSkin", None)
+    try:
+        skin = _text(get_skin(car_id)) if get_skin is not None else None
+    except Exception:
+        skin = None
+    cache_key = (car_name, skin)
+    if cache_key in _vehicle_metadata_cache:
+        return _vehicle_metadata_cache[cache_key]
+
+    game_root = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."
+    ))
+    car_folder = os.path.join(game_root, "content", "cars", car_name)
+    car_data = _read_json(os.path.join(car_folder, "ui", "ui_car.json"))
+    skin_data = {}
+    if skin and re.match(r"^[A-Za-z0-9_-]+$", skin):
+        skin_data = _read_json(os.path.join(
+            car_folder, "skins", skin, "ui_skin.json"
+        ))
+
+    team_color = skin_data.get("team_color")
+    if not isinstance(team_color, str) or not re.match(
+        r"^#[0-9A-Fa-f]{6}$", team_color
+    ):
+        team_color = None
+    metadata = {
+        "display_name": _text(car_data.get("name")),
+        "brand": _text(car_data.get("brand")),
+        "vehicle_class": _vehicle_category(car_data),
+        "team_name": _text(skin_data.get("team")),
+        "team_color": team_color.upper() if team_color else None,
+    }
+    _vehicle_metadata_cache[cache_key] = metadata
+    return metadata
+
+
+def _best_lap_time_ms(car_id, player):
+    best_lap = _lap_time_ms(_car_value(car_id, "BestLap"))
+    if best_lap is None and car_id == 0:
+        best_lap = _lap_time_ms(player.get("best_lap_time_ms"))
+    return best_lap
+
+
+def _race_finished(car_id):
+    return _boolean(_car_value(car_id, "RaceFinished"))
 
 
 def _update_sector_colors(player, track_key):
@@ -170,21 +330,28 @@ def _build_cars(player):
             if lap_count is None:
                 continue
             x, z = _world_position(car_id)
+            car_name = _text(ac.getCarName(car_id))
+            metadata = _vehicle_metadata(car_id, car_name)
             cars.append({
                 "car_id": car_id,
                 "source": "assetto_corsa_python_api",
                 "is_player": car_id == 0,
                 "driver_name": _text(ac.getDriverName(car_id)),
-                "car_name": _text(ac.getCarName(car_id)),
+                "car_name": car_name,
+                "display_name": metadata.get("display_name"),
                 "lap_count": lap_count,
                 "official_position": _position(car_id, "getCarLeaderboardPosition"),
                 "realtime_position": _position(car_id, "getCarRealTimeLeaderboardPosition"),
-                "best_lap_time_ms": (
-                    player.get("best_lap_time_ms") if car_id == 0 else None
-                ),
+                "best_lap_time_ms": _best_lap_time_ms(car_id, player),
+                "finished": _race_finished(car_id),
                 "world_x": x,
                 "world_z": z,
                 "track_position": spline,
+                "speed_kmh": _number(_car_value(car_id, "SpeedKMH"), 0.0, 600.0),
+                "brand": metadata.get("brand"),
+                "vehicle_class": metadata.get("vehicle_class"),
+                "team_name": metadata.get("team_name"),
+                "team_color": metadata.get("team_color"),
             })
         except Exception as error:
             _log_limited("car-%d" % car_id, "could not read car %d: %s" % (car_id, error))
@@ -240,6 +407,11 @@ def acUpdate(delta_t):
     except Exception:
         layout = None
     _update_sector_colors(player, (track, layout))
+    cars = _build_cars(player)
+    try:
+        total_cars = int(ac.getCarsCount())
+    except Exception:
+        total_cars = 0
     snapshot = {
         "protocol_version": PROTOCOL_VERSION,
         "simulator": "assetto_corsa_2014",
@@ -247,9 +419,13 @@ def acUpdate(delta_t):
         "track": track,
         "layout": layout,
         "session_type": None,
-        "lap_times_complete": False,
+        "lap_times_complete": (
+            bool(cars)
+            and len(cars) == total_cars
+            and all(car.get("best_lap_time_ms") is not None for car in cars)
+        ),
         "player": player,
-        "cars": _build_cars(player),
+        "cars": cars,
     }
     try:
         _write_snapshot(snapshot)

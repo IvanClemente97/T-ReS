@@ -1,89 +1,125 @@
-# T-ReS — Telemetry RaceStudio
+# T-ReS y LedsFanatecLinux
 
-Aplicación desktop independiente para visualizar telemetría real de
-simuladores. El contrato de datos y el registro de fuentes son independientes
-del simulador; los adaptadores se incorporan de forma individual. Consulta la
-[matriz de compatibilidad](docs/support-matrix.md): por ahora, el único
-adaptador implementado es **Assetto Corsa original (2014)**.
+Monorepo independiente para telemetría de carreras y control de los LED de
+volantes Fanatec. La versión publicada es **0.1.0**. Cada aplicación puede
+instalarse y ejecutarse por separado:
 
-El dashboard está diseñado para Windows, Linux y macOS con PySide6. Cada
-paquete ejecutable debe construirse en su sistema operativo destino y el
-soporte de un simulador depende además de que su juego y su API de telemetría
-estén disponibles en ese sistema. Solo se ha verificado en vivo en Linux con
-Assetto Corsa ejecutándose bajo Proton.
+```text
+├── T-ReS/             Dashboard de telemetría
+└── LedsFanatecLinux/  Servicio y GUI para el volante Fanatec
+```
 
-## Ejecutar
+No se generan sesiones ni valores ficticios: cuando una fuente no proporciona
+un dato, la aplicación lo deja como no disponible.
 
-Requiere Python 3.10+ y PySide6. Desde esta carpeta:
+## Qué hace cada aplicación
+
+**T-ReS** es un dashboard externo con dos vistas: **Carrera** muestra el mapa
+y la clasificación; **Vuelta** presenta trazas de pedales, velocidad y marcha.
+El mapa usa la posición y los metadatos de los coches que envía el simulador.
+En esta versión solo está implementado el adaptador de Assetto Corsa original
+(2014). ACC, F1 25/26 y Le Mans Ultimate aún no están integrados.
+
+**LedsFanatecLinux** mantiene un servicio `systemd --user` que lee telemetría y
+controla las zonas RGB y la pantalla del volante. Su GUI sirve para gestionar
+perfiles, cambiar los colores de RPM/RPM MAX y probar LED y banderas. El
+servicio es el único proceso que escribe en el hardware y puede seguir activo
+sin la GUI abierta. La fuente completa de Assetto Corsa es el snapshot de
+Fanatec Rivals; el snapshot de T-ReS es una alternativa parcial y no aporta el
+límite de RPM ni las banderas.
+
+## Requisitos y compatibilidad
+
+| Aplicación | Requisitos principales | Compatibilidad verificada |
+|---|---|---|
+| T-ReS | Python 3.10+ y PySide6 | Assetto Corsa original en Linux/Proton |
+| LedsFanatecLinux | Linux, Python 3.11+, `systemd --user`, PySide6 para la GUI y volante reconocido por `hid_fanatec` | Assetto Corsa original mediante Fanatec Rivals y driver Linux |
+
+T-ReS está diseñado para Windows, Linux y macOS, pero la disponibilidad de
+telemetría depende del juego, el adaptador y el sistema; fuera de la
+configuración indicada no se declara validación en vivo. El control de hardware
+de LedsFanatecLinux depende de los módulos Linux `hid_fanatec` y
+`led_class_multicolor`, y de permisos de escritura del usuario en la interfaz
+sysfs del volante. No requiere `sudo` cuando esos permisos ya están
+configurados. En macOS no existe este backend de hardware. Consulta los
+README de cada aplicación para sus matrices y limitaciones completas.
+
+## Instalar y arrancar T-ReS
+
+Linux y macOS:
 
 ```bash
+cd T-ReS
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ./run.sh
 ```
 
-En Windows, usa `run.bat`. Si prefieres instalar el comando de usuario:
+En Windows, crea y activa el entorno con `py -m venv .venv` y
+`.venv\Scripts\Activate.ps1`, instala con `python -m pip install -e .` y
+ejecuta `run.bat`. También puedes arrancarlo con `python -m t_res` después de
+instalarlo.
+
+### Conectar Assetto Corsa original
+
+Para telemetría del jugador en Linux/Proton, T-ReS puede leer la Shared Memory
+del juego. Para recibir rivales, posiciones, clasificación y datos completos del
+mapa, instala el puente Python del juego:
+
+1. Copia `T-ReS/integrations/assetto_corsa/TReS.py` y
+   `T-ReS/integrations/assetto_corsa/t_res_ac_shared_memory.py` a una carpeta
+   `apps/python/TReS/` dentro de la instalación de Assetto Corsa.
+2. Activa `[TRES] ACTIVE=1` en `cfg/python.ini`, reinicia el juego y abre
+   **T-ReS Telemetry** desde la barra de apps Python.
+3. En T-ReS, selecciona el archivo `telemetry.json` generado por el puente y
+   la carpeta `content/tracks` de Assetto Corsa.
+
+La aplicación de escritorio no modifica la instalación del juego. En
+Windows, configura el puente según
+[`T-ReS/integrations/assetto_corsa/README.md`](T-ReS/integrations/assetto_corsa/README.md).
+
+## Instalar y arrancar LedsFanatecLinux
+
+En Linux, con el driver y los permisos del volante ya configurados:
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-t-res
+cd LedsFanatecLinux
+python3 -m pip install -e '.[gui]'
+./scripts/install-service.sh
+./scripts/run-gui.sh
 ```
 
-En Windows, activa el entorno con `.venv\Scripts\activate` y ejecuta `t-res`.
-También puede iniciarse con `python -m t_res` tras instalar el proyecto.
-
-Para crear un ejecutable autónomo en el sistema donde se construye:
+El instalador registra y habilita el servicio de usuario y trata de habilitar
+`linger`, para que el servicio continúe al cerrar la sesión gráfica. La GUI
+puede cerrarse sin detener el servicio. Para comprobarlo:
 
 ```bash
-python -m pip install -e '.[build]'
-pyinstaller --noconfirm --windowed --name T-ReS --paths src src/t_res/__main__.py
+systemctl --user status leds-fanatec-linux.service
+journalctl --user -u leds-fanatec-linux.service -f
 ```
 
-Los ejecutables de Windows y macOS deben construirse y probarse en sus
-respectivos sistemas; un binario creado en Linux no se considera portable.
-Las rutas/configuración de T-ReS usan mecanismos nativos de Qt y permiten
-seleccionar manualmente la telemetría y los datos de pista.
-
-## Conectar Assetto Corsa original
-
-Sigue [las instrucciones del puente](integrations/assetto_corsa/README.md).
-En Linux/Proton, el adaptador intenta leer directamente la Shared Memory
-`/dev/shm/acpmf_*` para mostrar telemetría real del jugador, sin instalar el
-puente. Para rivales, clasificación, posiciones y mapa se necesita la
-aplicación Python dentro del juego. En Windows, usa el puente para publicar
-datos al dashboard. Las instalaciones habituales de Steam se detectan en los
-sistemas compatibles; también puedes elegir las rutas desde la ventana si el
-juego está instalado en otra ubicación. Consulta el [contrato de adaptadores](docs/adapter-architecture.md)
-antes de añadir una integración nueva.
-
-El panel no simula sesiones. Si el juego no está publicando muestras nuevas,
-faltan campos o el mapa no está instalado, se muestra el estado correspondiente.
-Las vueltas restantes solo se presentan cuando el juego comunica una sesión
-limitada por vueltas. La clasificación solo marca vuelta rápida si hubiera un
-tiempo válido para cada coche; el puente actual no tiene esa cobertura.
-
-## Datos y limitaciones
-
-- Los pedales son las señales `gas` y `brake` del juego (0–1), no lecturas de
-  un volante o pedalera USB.
-- El mapa requiere `map.png`, `data/map.ini` y coordenadas mundiales válidas.
-- El trazado colorea sectores completados con los colores permitidos:
-  morado (mejor de sesión), verde (mejor personal) y amarillo (más lento).
-  Esta versión calcula verde/amarillo con tiempos reales del jugador; no
-  dispone de tiempos de sector de toda la sesión para afirmar morado.
-- La señal del juego se integra mediante un protocolo JSON local versionado.
-  Los campos ausentes permanecen ausentes; no se deducen posiciones desde la
-  spline ni se completan tiempos.
-- No requiere hardware Fanatec ni importa código de otros proyectos.
-
-Las pruebas usan snapshots sintéticos solo como fixtures aisladas. No se
-utilizan para presentar telemetría en la aplicación.
+En Assetto Corsa, habilita la app Python **Fanatec Rivals** para que publique
+el snapshot completo que consume el servicio. Si solo tienes el puente T-ReS,
+el servicio usa lo disponible y mantiene apagadas las RPM cuando falta
+`max_rpm`; no sustituye datos ausentes por valores supuestos. Los perfiles se
+guardan en `~/.config/LedsFanatecLinux/profiles/`. Para desinstalar el servicio
+de usuario ejecuta `./scripts/uninstall-service.sh`.
 
 ## Pruebas
 
-Sin instalar ni abrir un simulador:
+Desde la raíz del repositorio:
 
 ```bash
-PYTHONPATH=src python -m unittest discover -s tests -v
-python -m compileall -q src integrations/assetto_corsa
+# T-ReS
+(cd T-ReS && PYTHONPATH=src python -m unittest discover -s tests -v)
+(cd T-ReS && python -m compileall -q src integrations/assetto_corsa)
+
+# LedsFanatecLinux
+(cd LedsFanatecLinux && PYTHONPATH=src python3 -m unittest discover -s tests -v)
+(cd LedsFanatecLinux && python3 -m compileall -q src scripts)
 ```
+
+La compatibilidad en vivo y los requisitos específicos se detallan en
+[`T-ReS/README.md`](T-ReS/README.md) y
+[`LedsFanatecLinux/README.md`](LedsFanatecLinux/README.md).
