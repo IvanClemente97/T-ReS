@@ -62,6 +62,31 @@ Las vueltas restantes solo se presentan cuando el juego comunica una sesión
 limitada por vueltas. La clasificación solo marca vuelta rápida si hubiera un
 tiempo válido para cada coche; el puente actual no tiene esa cobertura.
 
+## Interfaz de carrera y vuelta
+
+La vista se divide en dos pestañas: **Carrera** reúne mapa y clasificación;
+**Vuelta** ocupa el espacio con las trazas de pedales, velocidad y marcha.
+Se quitaron las tarjetas numéricas independientes de velocidad, marcha y RPM;
+las señales gráficas se mantienen. El tema usa carbón, degradados y acentos
+naranjas sin logotipos de terceros.
+
+En el mapa, los marcadores muestran la posición del piloto. Cuando todos los
+coches tienen la misma clase conocida (o la misma marca si falta esa clase),
+se usa blanco; en carreras multiclase se asigna un color estable por clase.
+En simuladores F1, el color
+de escudería se muestra solo si el adaptador publica un `team_color` válido.
+La integración actual de Assetto Corsa lee marca/clase y equipo de los archivos
+locales del coche/skin, pero esos archivos no suelen definir un color de equipo.
+Los aros se calculan con datos reales: azul para coches con menos vueltas que
+el jugador; verde lima solo para un coche con al menos una vuelta de ventaja,
+cerca por posición normalizada y con mayor velocidad. Este último es un
+indicador aproximado, no una predicción de tiempo/distancia exactos.
+
+F1 25/26, ACC y LMU aún no tienen adaptador en esta versión. Por tanto, sus
+colores de escudería y categorías solo aparecerán cuando exista una integración
+que proporcione esos metadatos; no se deducen ni se sustituyen por valores
+inventados.
+
 ## Datos y limitaciones
 
 - Los pedales son las señales `gas` y `brake` del juego (0–1), no lecturas de

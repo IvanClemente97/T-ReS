@@ -73,6 +73,16 @@ def _text(value: Any, *, maximum_length: int = 96) -> str | None:
     return cleaned
 
 
+def _team_color(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
+        raise TelemetryValidationError("Team color must use #RRGGBB format.")
+    if any(character not in "0123456789abcdefABCDEF" for character in value[1:]):
+        raise TelemetryValidationError("Team color must use #RRGGBB format.")
+    return value.upper()
+
+
 def _availability(value: Any) -> Availability:
     if value is None:
         return Availability.UNAVAILABLE
@@ -164,6 +174,12 @@ class CarTelemetry:
     best_lap_time_ms: int | None
     world_x: float | None
     world_z: float | None
+    track_position: float | None
+    speed_kmh: float | None
+    brand: str | None
+    vehicle_class: str | None
+    team_name: str | None
+    team_color: str | None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> CarTelemetry:
@@ -189,6 +205,12 @@ class CarTelemetry:
             ),
             world_x=_number(raw.get("world_x"), minimum=-100000, maximum=100000),
             world_z=_number(raw.get("world_z"), minimum=-100000, maximum=100000),
+            track_position=_number(raw.get("track_position"), minimum=0, maximum=1),
+            speed_kmh=_number(raw.get("speed_kmh"), minimum=0, maximum=600),
+            brand=_text(raw.get("brand"), maximum_length=64),
+            vehicle_class=_text(raw.get("vehicle_class"), maximum_length=32),
+            team_name=_text(raw.get("team_name"), maximum_length=96),
+            team_color=_team_color(raw.get("team_color")),
         )
 
 

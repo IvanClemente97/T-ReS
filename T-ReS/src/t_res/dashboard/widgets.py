@@ -7,18 +7,19 @@ import math
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem, QWidget
 
 from t_res.domain.models import CarTelemetry, TelemetrySnapshot
 
 
 COLORS = {
-    "background": "#11151B",
-    "panel": "#171D25",
-    "grid": "#39424E",
-    "text": "#E7ECF2",
-    "muted": "#9AA7B5",
+    "background": "#0B0D11",
+    "panel": "#15191F",
+    "grid": "#343B45",
+    "text": "#F1F3F5",
+    "muted": "#9BA3AD",
+    "orange": "#FF6A00",
     "throttle": "#22C55E",
     "brake": "#EF4444",
     "speed": "#38BDF8",
@@ -26,7 +27,24 @@ COLORS = {
     "green": "#22C55E",
     "purple": "#A855F7",
     "yellow": "#FACC15",
+    "lapped": "#3B82F6",
+    "lapping_player": "#C8F135",
 }
+
+CLASS_COLORS = {
+    "lmp": "#FF6A00",
+    "gt3": "#38BDF8",
+    "gt2": "#B77AFF",
+    "gt4": "#A3E635",
+    "gt1": "#F472B6",
+    "tcr": "#FACC15",
+    "f1": "#FB7185",
+    "single-seater": "#FB923C",
+}
+
+_FALLBACK_CLASS_COLORS = (
+    "#38BDF8", "#B77AFF", "#A3E635", "#F472B6", "#FACC15", "#2DD4BF"
+)
 
 
 def _format_lap_time(value: int | None) -> str:
@@ -39,6 +57,72 @@ def _format_lap_time(value: int | None) -> str:
 
 def _pedal_percent(value: float | None) -> float | None:
     return value * 100.0 if value is not None else None
+
+
+def _class_key(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = "".join(character for character in value.casefold() if character.isalnum())
+    for prefix in ("lmp", "gt1", "gt2", "gt3", "gt4", "tcr", "f1"):
+        if normalized.startswith(prefix):
+            return prefix
+    if normalized == "formula1":
+        return "f1"
+    if normalized == "singleseater":
+        return "single-seater"
+    return normalized or None
+
+
+def _map_car_color(snapshot: TelemetrySnapshot, car: CarTelemetry) -> str:
+    category = _class_key(car.vehicle_class)
+    if car.team_color and (
+        snapshot.simulator.casefold().startswith("f1") or category == "f1"
+    ):
+        return car.team_color
+
+    car_classes = [_class_key(entry.vehicle_class) for entry in snapshot.cars]
+    classes = sorted({key for key in car_classes if key is not None})
+    all_classes_known = bool(car_classes) and all(key is not None for key in car_classes)
+    if len(classes) <= 1:
+        if all_classes_known:
+            return "#F1F3F5"
+        brands = [entry.brand.casefold() if entry.brand else None for entry in snapshot.cars]
+        if brands and all(brand is not None for brand in brands) and len(set(brands)) == 1:
+            return "#F1F3F5"
+        return "#AAB2BD"
+    if category is None:
+        return "#AAB2BD"
+    if category in CLASS_COLORS:
+        return CLASS_COLORS[category]
+    return _FALLBACK_CLASS_COLORS[classes.index(category) % len(_FALLBACK_CLASS_COLORS)]
+
+
+def _lap_ring_color(
+    snapshot: TelemetrySnapshot, car: CarTelemetry
+) -> str | None:
+    if car.is_player or car.lap_count is None:
+        return None
+    player_laps = snapshot.player.completed_laps
+    if player_laps is None:
+        return None
+    if car.lap_count < player_laps:
+        return COLORS["lapped"]
+    if car.lap_count <= player_laps:
+        return None
+
+    player_position = snapshot.player.track_position
+    player_speed = snapshot.player.speed_kmh
+    if (
+        player_position is None
+        or player_speed is None
+        or car.track_position is None
+        or car.speed_kmh is None
+    ):
+        return None
+    gap_behind = (player_position - car.track_position) % 1.0
+    if gap_behind <= 0.025 and car.speed_kmh > player_speed + 3.0:
+        return COLORS["lapping_player"]
+    return None
 
 
 class RaceMapWidget(QWidget):
@@ -157,7 +241,10 @@ class RaceMapWidget(QWidget):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(COLORS["background"]))
+        background = QLinearGradient(0, 0, self.width(), self.height())
+        background.setColorAt(0, QColor("#171B21"))
+        background.setColorAt(1, QColor("#0D1014"))
+        painter.fillRect(self.rect(), background)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._pixmap.isNull():
             painter.setPen(QColor(COLORS["muted"]))
@@ -185,34 +272,55 @@ class RaceMapWidget(QWidget):
 
         if self._snapshot is None:
             return
-        for car in self._snapshot.cars:
+        ordered_cars = sorted(self._snapshot.cars, key=lambda car: car.is_player)
+        for car in ordered_cars:
             point = self._map_point(car.world_x, car.world_z, target)
             if point is None:
                 continue
+            marker_color = QColor(_map_car_color(self._snapshot, car))
+            ring_color = _lap_ring_color(self._snapshot, car)
+            if ring_color:
+                painter.setPen(QPen(QColor(ring_color), 2.5))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(point, 13, 13)
+            painter.setPen(QPen(
+                QColor(COLORS["orange"] if car.is_player else "#101318"),
+                2 if car.is_player else 1.5,
+            ))
+            painter.setBrush(marker_color)
+            painter.drawEllipse(point, 10, 10)
+            position = car.realtime_position or car.official_position
+            if position is not None:
+                font = QFont()
+                font.setBold(True)
+                font.setPointSize(7)
+                painter.setFont(font)
+                contrast = "#111318" if marker_color.lightness() > 155 else "#FFFFFF"
+                painter.setPen(QColor(contrast))
+                painter.drawText(
+                    QRectF(point.x() - 9, point.y() - 8, 18, 16),
+                    Qt.AlignmentFlag.AlignCenter,
+                    str(position),
+                )
             if car.is_player:
-                painter.setPen(QPen(QColor("#FFFFFF"), 2))
-                painter.setBrush(QColor("#111827"))
-                painter.drawEllipse(point, 7, 7)
                 painter.drawText(QRectF(point.x() + 8, point.y() - 10, 70, 20),
                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                  "TÚ")
-            else:
-                painter.setPen(QPen(QColor("#111827"), 1.5))
-                painter.setBrush(QColor("#CBD5E1"))
-                painter.drawEllipse(point, 5, 5)
 
 
 class LeaderboardWidget(QTableWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(0, 5, parent)
-        self.setHorizontalHeaderLabels(("Pos.", "Piloto", "Coche", "Vuelta", "Mejor"))
+        super().__init__(0, 6, parent)
+        self.setHorizontalHeaderLabels(
+            ("Pos.", "Piloto", "Coche", "Clase", "Vuelta", "Mejor")
+        )
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.setAlternatingRowColors(True)
         self.setSortingEnabled(False)
         self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in (0, 2, 3, 4):
+        for column in (0, 2, 3, 4, 5):
             self.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
 
     def set_snapshot(self, snapshot: TelemetrySnapshot | None) -> None:
@@ -221,7 +329,7 @@ class LeaderboardWidget(QTableWidget):
             return
         if not snapshot.cars:
             self.insertRow(0)
-            self.setSpan(0, 0, 1, 5)
+            self.setSpan(0, 0, 1, 6)
             self.setItem(0, 0, QTableWidgetItem(
                 "Sin datos de rivales; hace falta el complemento Python de Assetto Corsa."
             ))
@@ -239,11 +347,14 @@ class LeaderboardWidget(QTableWidget):
                 str(position) if position is not None else "—",
                 car.driver_name or ("Jugador" if car.is_player else "—"),
                 car.car_name or "—",
+                car.vehicle_class or "—",
                 str(car.lap_count) if car.lap_count is not None else "—",
                 _format_lap_time(car.best_lap_time_ms),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
+                if column == 3 and car.vehicle_class:
+                    item.setForeground(QColor(_map_car_color(snapshot, car)))
                 if car.car_id == fastest_id:
                     font = QFont(item.font())
                     font.setBold(True)

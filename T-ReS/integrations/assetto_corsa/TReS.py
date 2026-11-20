@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -26,6 +27,7 @@ _last_sector = None
 _last_track_key = None
 _personal_best_sectors = [None] * 16
 _sector_colors = [None] * 16
+_vehicle_metadata_cache = {}
 
 
 def _log_limited(key, message, interval=10.0):
@@ -107,6 +109,77 @@ def _position(car_id, method_name):
         return None
 
 
+def _read_json(path):
+    try:
+        with open(path, "r") as source:
+            value = json.load(source)
+        return value if isinstance(value, dict) else {}
+    except (IOError, OSError, ValueError):
+        return {}
+
+
+def _vehicle_category(car_data):
+    tags = car_data.get("tags", [])
+    if not isinstance(tags, list):
+        tags = []
+    description = " ".join(
+        [str(car_data.get("class", ""))] + [str(tag) for tag in tags]
+    ).upper()
+    for pattern, category in (
+        (r"\bLMP[123]?\b", "LMP"),
+        (r"\bGT[1-4]\b", None),
+        (r"\bTCR\b", "TCR"),
+        (r"\bFORMULA\s*1\b|\bF1\b", "F1"),
+    ):
+        match = re.search(pattern, description)
+        if match:
+            return match.group(0).replace(" ", "") if category is None else category
+    if "SINGLESEATER" in description or "SINGLE-SEATER" in description:
+        return "Single-seater"
+    value = _text(car_data.get("class"))
+    if value and value.lower() not in ("race", "street", "road", "car"):
+        return value
+    return None
+
+
+def _vehicle_metadata(car_id, car_name):
+    if not car_name or not re.match(r"^[A-Za-z0-9_-]+$", car_name):
+        return {}
+    get_skin = getattr(ac, "getCarSkin", None)
+    try:
+        skin = _text(get_skin(car_id)) if get_skin is not None else None
+    except Exception:
+        skin = None
+    cache_key = (car_name, skin)
+    if cache_key in _vehicle_metadata_cache:
+        return _vehicle_metadata_cache[cache_key]
+
+    game_root = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."
+    ))
+    car_folder = os.path.join(game_root, "content", "cars", car_name)
+    car_data = _read_json(os.path.join(car_folder, "ui", "ui_car.json"))
+    skin_data = {}
+    if skin and re.match(r"^[A-Za-z0-9_-]+$", skin):
+        skin_data = _read_json(os.path.join(
+            car_folder, "skins", skin, "ui_skin.json"
+        ))
+
+    team_color = skin_data.get("team_color")
+    if not isinstance(team_color, str) or not re.match(
+        r"^#[0-9A-Fa-f]{6}$", team_color
+    ):
+        team_color = None
+    metadata = {
+        "brand": _text(car_data.get("brand")),
+        "vehicle_class": _vehicle_category(car_data),
+        "team_name": _text(skin_data.get("team")),
+        "team_color": team_color.upper() if team_color else None,
+    }
+    _vehicle_metadata_cache[cache_key] = metadata
+    return metadata
+
+
 def _update_sector_colors(player, track_key):
     global _last_lap, _last_sector, _last_track_key
     global _personal_best_sectors, _sector_colors
@@ -170,12 +243,14 @@ def _build_cars(player):
             if lap_count is None:
                 continue
             x, z = _world_position(car_id)
+            car_name = _text(ac.getCarName(car_id))
+            metadata = _vehicle_metadata(car_id, car_name)
             cars.append({
                 "car_id": car_id,
                 "source": "assetto_corsa_python_api",
                 "is_player": car_id == 0,
                 "driver_name": _text(ac.getDriverName(car_id)),
-                "car_name": _text(ac.getCarName(car_id)),
+                "car_name": car_name,
                 "lap_count": lap_count,
                 "official_position": _position(car_id, "getCarLeaderboardPosition"),
                 "realtime_position": _position(car_id, "getCarRealTimeLeaderboardPosition"),
@@ -185,6 +260,11 @@ def _build_cars(player):
                 "world_x": x,
                 "world_z": z,
                 "track_position": spline,
+                "speed_kmh": _number(_car_value(car_id, "SpeedKMH"), 0.0, 600.0),
+                "brand": metadata.get("brand"),
+                "vehicle_class": metadata.get("vehicle_class"),
+                "team_name": metadata.get("team_name"),
+                "team_color": metadata.get("team_color"),
             })
         except Exception as error:
             _log_limited("car-%d" % car_id, "could not read car %d: %s" % (car_id, error))

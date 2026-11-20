@@ -1,0 +1,17 @@
+[Unit]
+Description=LedsFanatecLinux telemetry and Fanatec LED service
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_ROOT@
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=@PROJECT_ROOT@/src
+ExecStart=@PYTHON@ -m leds_fanatec_linux.service
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target

@@ -26,3 +26,11 @@ does not claim purple session-best sectors and does not declare a fastest
 driver. It colors completed player sectors green when they set a new observed
 personal best and yellow when slower than that personal best. Missing rank,
 position, timing, or track geometry remains unavailable.
+
+The bridge also reads `ui_car.json` and the selected skin's `ui_skin.json` from
+the installed car content for optional brand, class, and team-name metadata.
+It publishes a team color only when the skin file explicitly contains a valid
+`team_color` value; it does not guess colors from the car model or team name.
+Per-car speed and normalized track position are included for the dashboard's
+nearby-lapping indicator. To use these fields, manually copy the updated bridge
+files into the game's `apps/python/TReS/` directory and restart the game.

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -105,15 +106,22 @@ class TReSWindow(QMainWindow):
         self._last_lap_count: int | None = None
 
         central = QWidget(self)
+        central.setObjectName("dashboard")
         outer = QVBoxLayout(central)
-        outer.setContentsMargins(18, 14, 18, 14)
-        outer.setSpacing(12)
+        outer.setContentsMargins(20, 16, 20, 16)
+        outer.setSpacing(14)
         self.setCentralWidget(central)
 
         toolbar = QHBoxLayout()
+        heading = QVBoxLayout()
         title = QLabel("T-ReS")
         title.setObjectName("title")
-        toolbar.addWidget(title)
+        subtitle = QLabel("TELEMETRÍA DE COMPETICIÓN")
+        subtitle.setObjectName("subtitle")
+        heading.addWidget(title)
+        heading.addWidget(subtitle)
+        toolbar.addLayout(heading)
+        toolbar.addSpacing(20)
         toolbar.addWidget(QLabel("Simulador:"))
         self.adapter_selector = QComboBox()
         for registration in self.adapter_registrations:
@@ -128,10 +136,10 @@ class TReSWindow(QMainWindow):
         self.connection_label = QLabel("Esperando al simulador")
         self.connection_label.setObjectName("connection")
         toolbar.addWidget(self.connection_label)
-        self.snapshot_button = QPushButton("Elegir telemetría")
+        self.snapshot_button = QPushButton("Elegir fuente")
         self.snapshot_button.clicked.connect(self._choose_snapshot)
         toolbar.addWidget(self.snapshot_button)
-        self.maps_button = QPushButton("Carpeta de mapas")
+        self.maps_button = QPushButton("Circuitos")
         self.maps_button.clicked.connect(self._choose_tracks_root)
         toolbar.addWidget(self.maps_button)
         outer.addLayout(toolbar)
@@ -139,17 +147,18 @@ class TReSWindow(QMainWindow):
         stats = QHBoxLayout()
         self.track_label = QLabel("Circuito: —")
         self.laps_label = QLabel("Vueltas restantes: —")
-        self.speed_label = QLabel("Velocidad: —")
-        self.gear_label = QLabel("Marcha: —")
-        self.rpm_label = QLabel("RPM: —")
-        for label in (self.track_label, self.laps_label, self.speed_label,
-                      self.gear_label, self.rpm_label):
-            label.setObjectName("stat")
+        for label in (self.track_label, self.laps_label):
+            label.setObjectName("meta")
             stats.addWidget(label)
+        stats.addStretch(1)
         outer.addLayout(stats)
 
-        content = QGridLayout()
-        content.setHorizontalSpacing(12)
+        self.pages = QTabWidget()
+        race_page = QWidget()
+        race_page.setObjectName("page")
+        content = QGridLayout(race_page)
+        content.setContentsMargins(0, 10, 0, 0)
+        content.setHorizontalSpacing(14)
         content.setVerticalSpacing(12)
         self.map_widget = RaceMapWidget()
         self.map_widget.setObjectName("panel")
@@ -158,34 +167,71 @@ class TReSWindow(QMainWindow):
         self.leaderboard.setObjectName("panel")
         self.chart = TelemetryTraceWidget()
         self.chart.setObjectName("panel")
-        content.addWidget(self._section("Mapa del circuito", self.map_widget), 0, 0)
-        content.addWidget(self._section("Clasificación", self.leaderboard), 0, 1)
-        content.addWidget(self._section("Telemetría de la vuelta", self.chart), 1, 0, 1, 2)
+        content.addWidget(self._section("MAPA EN VIVO", self.map_widget), 0, 0)
+        content.addWidget(self._section("CLASIFICACIÓN", self.leaderboard), 0, 1)
         content.setColumnStretch(0, 3)
         content.setColumnStretch(1, 2)
-        content.setRowStretch(0, 3)
-        content.setRowStretch(1, 2)
-        outer.addLayout(content, 1)
+        content.setRowStretch(0, 1)
+        self.pages.addTab(race_page, "Carrera")
+
+        lap_page = QWidget()
+        lap_page.setObjectName("page")
+        lap_layout = QVBoxLayout(lap_page)
+        lap_layout.setContentsMargins(0, 10, 0, 0)
+        lap_layout.setSpacing(10)
+        lap_layout.addWidget(
+            self._section("TRAZAS DE LA VUELTA ACTUAL", self.chart), 1
+        )
+        self.pages.addTab(lap_page, "Vuelta")
+        outer.addWidget(self.pages, 1)
 
         self.footer = QLabel(
-            "Sin datos ficticios: las señales aparecen cuando el puente del juego publica telemetría válida."
+            "Solo se muestran datos reales publicados por el simulador."
         )
         self.footer.setObjectName("footer")
         outer.addWidget(self.footer)
 
         self.setStyleSheet("""
-            QMainWindow, QWidget { background: #11151B; color: #E7ECF2; }
-            QWidget#panel { background: #171D25; border: 1px solid #2A3440; border-radius: 8px; }
-            QLabel#title { font-size: 24px; font-weight: 700; color: #F7FAFC; }
-            QLabel#connection { color: #FACC15; font-weight: 600; }
-            QLabel#stat { background: #171D25; border-radius: 6px; padding: 9px 12px; }
-            QLabel#section { font-size: 15px; font-weight: 650; color: #C7D2DE; padding: 2px 3px; }
-            QLabel#footer { color: #9AA7B5; padding-top: 2px; }
-            QPushButton { background: #263241; border: 1px solid #394858; border-radius: 5px;
-                          padding: 7px 10px; }
-            QPushButton:hover { background: #344356; }
-            QTableWidget { background: #171D25; gridline-color: #303B48; alternate-background-color: #1D2530; }
-            QHeaderView::section { background: #202A36; color: #D8E0E8; border: 0; padding: 5px; }
+            QMainWindow, QWidget#dashboard { background: #0B0D11; color: #F1F3F5; }
+            QWidget#page { background: transparent; }
+            QWidget#panel {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #191E25, stop:1 #12151A);
+                border: 1px solid #2B313A; border-radius: 10px;
+            }
+            QLabel#title { font-size: 29px; font-weight: 800; color: #F5F6F7; }
+            QLabel#subtitle { color: #FF7A1A; font-size: 9px; font-weight: 700;
+                               letter-spacing: 2px; }
+            QLabel#connection { color: #FACC15; font-weight: 700; background: #262117;
+                                border: 1px solid #51401A; border-radius: 7px;
+                                padding: 7px 11px; }
+            QLabel#meta { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 #1C2229, stop:1 #14181D);
+                          border: 1px solid #2D333C; border-radius: 7px;
+                          padding: 9px 13px; font-size: 13px; }
+            QLabel#section { font-size: 12px; font-weight: 750; color: #D2D7DE;
+                             letter-spacing: 1.2px; padding: 3px 4px; }
+            QLabel#footer { color: #8F98A3; padding-top: 2px; }
+            QPushButton { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                              stop:0 #272D35, stop:1 #1A1F26);
+                          border: 1px solid #3A424D; border-radius: 6px;
+                          padding: 8px 11px; color: #E7E9EC; font-weight: 600; }
+            QPushButton:hover { border-color: #FF6A00; color: #FFFFFF; }
+            QComboBox { background: #171B21; border: 1px solid #353C46; border-radius: 6px;
+                        padding: 7px 9px; min-width: 150px; }
+            QTabWidget::pane { border: 1px solid #2B313A; border-radius: 9px;
+                               background: #0F1216; top: -1px; }
+            QTabBar::tab { background: #171B21; color: #9BA3AD; padding: 10px 24px;
+                           margin-right: 5px; border: 1px solid #2B313A;
+                           border-top-left-radius: 7px; border-top-right-radius: 7px;
+                           font-weight: 700; }
+            QTabBar::tab:selected { color: #FFFFFF; border-color: #FF6A00;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #71320F, stop:1 #25201D); }
+            QTableWidget { background: #15191F; gridline-color: #2C333C;
+                           alternate-background-color: #1B2027; border: 0; }
+            QHeaderView::section { background: #20252C; color: #D8DDE4;
+                                   border: 0; padding: 7px 5px; font-weight: 700; }
         """)
 
         self.worker = SnapshotWorker(self.adapter, self)
@@ -290,24 +336,16 @@ class TReSWindow(QMainWindow):
             f"Vueltas restantes: {remaining}" if remaining is not None
             else "Vueltas restantes: no disponible"
         )
-        speed = snapshot.player.speed_kmh
-        self.speed_label.setText(
-            f"Velocidad: {speed:.0f} km/h" if speed is not None else "Velocidad: no disponible"
-        )
-        gear = snapshot.player.gear
-        gear_text = "R" if gear == -1 else ("N" if gear == 0 else str(gear))
-        self.gear_label.setText(
-            f"Marcha: {gear_text}" if gear is not None else "Marcha: no disponible"
-        )
-        rpm = snapshot.player.rpm
-        self.rpm_label.setText(f"RPM: {rpm}" if rpm is not None else "RPM: no disponible")
         full_bridge = bool(snapshot.cars)
         self.connection_label.setText(
             f"Conectado · {self.adapter_registration.display_name} + telemetría completa"
             if full_bridge
             else f"Conectado · {self.adapter_registration.display_name}, datos parciales"
         )
-        self.connection_label.setStyleSheet("color: #22C55E; font-weight: 600;")
+        self.connection_label.setStyleSheet(
+            "color: #86EFAC; font-weight: 700; background: #17251C; "
+            "border: 1px solid #265237; border-radius: 7px; padding: 7px 11px;"
+        )
         self.map_widget.set_snapshot(snapshot)
         player_car = next((car for car in snapshot.cars if car.is_player), None)
         if player_car is not None:
@@ -341,12 +379,9 @@ class TReSWindow(QMainWindow):
     def _on_source_error(self, message: str) -> None:
         self._latest = None
         self.connection_label.setText("Esperando telemetría válida")
-        self.connection_label.setStyleSheet("color: #FACC15; font-weight: 600;")
+        self.connection_label.setStyleSheet("")
         self.track_label.setText("Circuito: —")
         self.laps_label.setText("Vueltas restantes: —")
-        self.speed_label.setText("Velocidad: —")
-        self.gear_label.setText("Marcha: —")
-        self.rpm_label.setText("RPM: —")
         self.map_widget.set_snapshot(None)
         self.leaderboard.set_snapshot(None)
         self.chart.set_snapshot(None)
