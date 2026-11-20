@@ -1,0 +1,1 @@
+"""Simulator-independent telemetry domain."""
