@@ -146,10 +146,8 @@ class TReSWindow(QMainWindow):
 
         stats = QHBoxLayout()
         self.track_label = QLabel("Circuito: —")
-        self.laps_label = QLabel("Vueltas restantes: —")
-        for label in (self.track_label, self.laps_label):
-            label.setObjectName("meta")
-            stats.addWidget(label)
+        self.track_label.setObjectName("meta")
+        stats.addWidget(self.track_label)
         stats.addStretch(1)
         outer.addLayout(stats)
 
@@ -331,11 +329,6 @@ class TReSWindow(QMainWindow):
         if snapshot.layout:
             track += f" · {snapshot.layout}"
         self.track_label.setText(f"Circuito: {track}")
-        remaining = snapshot.laps_remaining
-        self.laps_label.setText(
-            f"Vueltas restantes: {remaining}" if remaining is not None
-            else "Vueltas restantes: no disponible"
-        )
         full_bridge = bool(snapshot.cars)
         self.connection_label.setText(
             f"Conectado · {self.adapter_registration.display_name} + telemetría completa"
@@ -352,36 +345,23 @@ class TReSWindow(QMainWindow):
             self.map_widget.add_player_position(
                 player_car, snapshot.player.current_sector_index
             )
-        self.leaderboard.set_snapshot(snapshot)
+        self.leaderboard.set_snapshot(snapshot, self.map_widget.track_length_m)
         self.chart.set_snapshot(snapshot)
         if full_bridge:
             self.footer.setText(
                 f"Sesión: {snapshot.session_type or 'no disponible'} · "
-                f"Mejor vuelta: {self._fastest_lap_status(snapshot)}"
+                "Vuelta rápida y vueltas restantes en el mapa"
             )
         else:
             self.footer.setText(
                 "La fuente actual no proporciona clasificación ni posiciones de rivales."
             )
 
-    @staticmethod
-    def _fastest_lap_status(snapshot: TelemetrySnapshot) -> str:
-        car_id = snapshot.fastest_lap_car_id
-        if car_id is None:
-            return "tiempos por piloto no disponibles"
-        car = next((entry for entry in snapshot.cars if entry.car_id == car_id), None)
-        if car is None:
-            return "no disponible"
-        from t_res.dashboard.widgets import _format_lap_time
-        name = car.driver_name or ("Jugador" if car.is_player else "Piloto")
-        return f"{name} · {_format_lap_time(car.best_lap_time_ms)}"
-
     def _on_source_error(self, message: str) -> None:
         self._latest = None
         self.connection_label.setText("Esperando telemetría válida")
         self.connection_label.setStyleSheet("")
         self.track_label.setText("Circuito: —")
-        self.laps_label.setText("Vueltas restantes: —")
         self.map_widget.set_snapshot(None)
         self.leaderboard.set_snapshot(None)
         self.chart.set_snapshot(None)

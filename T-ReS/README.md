@@ -59,8 +59,11 @@ antes de añadir una integración nueva.
 El panel no simula sesiones. Si el juego no está publicando muestras nuevas,
 faltan campos o el mapa no está instalado, se muestra el estado correspondiente.
 Las vueltas restantes solo se presentan cuando el juego comunica una sesión
-limitada por vueltas. La clasificación solo marca vuelta rápida si hubiera un
-tiempo válido para cada coche; el puente actual no tiene esa cobertura.
+limitada por vueltas. El leaderboard selecciona una sola fuente de posiciones
+para toda la parrilla: prefiere las posiciones en tiempo real cuando están
+completas y son únicas; si no, usa la clasificación oficial y oculta rangos
+duplicados. La vuelta rápida global solo se anuncia cuando hay un tiempo válido
+para todos los coches conectados.
 
 ## Interfaz de carrera y vuelta
 
@@ -73,6 +76,18 @@ naranjas sin logotipos de terceros.
 En el mapa, los marcadores muestran la posición del piloto. Cuando todos los
 coches tienen la misma clase conocida (o la misma marca si falta esa clase),
 se usa blanco; en carreras multiclase se asigna un color estable por clase.
+La tabla usa el nombre legible de `ui_car.json` cuando está disponible. Su
+leaderboard presenta una tabla independiente por categoría, con posiciones
+recalculadas dentro de cada clase; no mezcla GT, LMP ni coches sin clase
+conocida. La columna GAP expresa metros/kilómetros derivados del progreso
+normalizado y la longitud oficial del layout en `ui_track.json`; al líder de
+cada clase se le muestra `—`. También distingue coches que siguen en carrera y
+coches que ya finalizaron cuando el juego proporciona ese estado. Las vueltas
+restantes y el tiempo de la vuelta rápida se apilan en una columna fija en la
+esquina superior izquierda del panel del mapa; el mapa se ajusta al espacio
+restante y no queda cubierto por esos indicadores. El nombre del piloto con la
+vuelta rápida válida se resalta en morado, sin repetirlo en el indicador de
+tiempo.
 En simuladores F1, el color
 de escudería se muestra solo si el adaptador publica un `team_color` válido.
 La integración actual de Assetto Corsa lee marca/clase y equipo de los archivos

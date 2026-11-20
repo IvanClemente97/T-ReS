@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -60,6 +61,49 @@ class BridgeSectorColorTests(unittest.TestCase):
         colors = self.sample(0, 1, 28000)
 
         self.assertNotIn("purple", colors)
+
+    def test_best_lap_and_race_finished_use_the_game_api_values(self):
+        values = {
+            (0, "BestLap"): 92345,
+            (0, "RaceFinished"): 1,
+            (1, "BestLap"): 0,
+            (1, "RaceFinished"): 0,
+        }
+        self.bridge._car_value = lambda car_id, name: values[(car_id, name)]
+
+        self.assertEqual(
+            self.bridge._best_lap_time_ms(0, {"best_lap_time_ms": 95000}), 92345
+        )
+        self.assertEqual(
+            self.bridge._best_lap_time_ms(1, {"best_lap_time_ms": 95000}), None
+        )
+        self.assertIs(self.bridge._race_finished(0), True)
+        self.assertIs(self.bridge._race_finished(1), False)
+
+    def test_best_lap_falls_back_to_shared_memory_for_player_only(self):
+        self.bridge._car_value = lambda _car_id, _name: None
+
+        self.assertEqual(
+            self.bridge._best_lap_time_ms(0, {"best_lap_time_ms": 93000}), 93000
+        )
+        self.assertIsNone(self.bridge._best_lap_time_ms(1, {"best_lap_time_ms": 93000}))
+
+    def test_reads_assetto_corsa_metadata_with_literal_newlines_in_strings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ui_car.json"
+            path.write_text('{"name":"Ferrari\nSF15-T"}', encoding="utf-8")
+
+            metadata = self.bridge._read_json(str(path))
+
+        self.assertEqual(metadata["name"], "Ferrari\nSF15-T")
+
+    def test_preserves_lmp_subclasses_for_separate_leaderboards(self):
+        self.assertEqual(
+            self.bridge._vehicle_category({"tags": ["#LMP1"]}), "LMP1"
+        )
+        self.assertEqual(
+            self.bridge._vehicle_category({"tags": ["#LMP2"]}), "LMP2"
+        )
 
 
 if __name__ == "__main__":

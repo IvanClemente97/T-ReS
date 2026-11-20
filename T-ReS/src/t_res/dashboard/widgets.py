@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import configparser
+import json
 import math
 from pathlib import Path
+import re
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHeaderView,
+    QLabel,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from t_res.domain.models import CarTelemetry, TelemetrySnapshot
 
@@ -53,6 +64,122 @@ def _format_lap_time(value: int | None) -> str:
     minutes, remainder = divmod(value, 60_000)
     seconds, milliseconds = divmod(remainder, 1000)
     return f"{minutes}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _ranking_positions(cars: tuple[CarTelemetry, ...]) -> dict[int, int | None]:
+    if not cars:
+        return {}
+    candidates = []
+    for preference, field in enumerate(("realtime_position", "official_position")):
+        available = [getattr(car, field) for car in cars]
+        ranks = [rank for rank in available if rank is not None]
+        unique_ranks = set(ranks)
+        complete_unique = len(ranks) == len(cars) and len(unique_ranks) == len(cars)
+        candidates.append((
+            (int(complete_unique), len(unique_ranks), len(ranks), -preference),
+            available,
+        ))
+    available = max(candidates, key=lambda candidate: candidate[0])[1]
+    counts: dict[int, int] = {}
+    for rank in available:
+        if rank is not None:
+            counts[rank] = counts.get(rank, 0) + 1
+    return {
+        car.car_id: rank if rank is not None and counts[rank] == 1 else None
+        for car, rank in zip(cars, available)
+    }
+
+
+def _gap_labels(
+    cars: tuple[CarTelemetry, ...],
+    positions: dict[int, int | None],
+    track_length_m: float | None,
+) -> dict[int, str]:
+    labels = {car.car_id: "—" for car in cars}
+    ordered = sorted(
+        (car for car in cars if positions.get(car.car_id) is not None),
+        key=lambda car: positions[car.car_id] or 999,
+    )
+    progress = {
+        car.car_id: car.lap_count + car.track_position
+        for car in ordered
+        if car.lap_count is not None and car.track_position is not None
+    }
+    for ahead, car in zip(ordered, ordered[1:]):
+        if ahead.car_id not in progress or car.car_id not in progress:
+            continue
+        difference = progress[ahead.car_id] - progress[car.car_id]
+        if difference < 0:
+            continue
+        if difference >= 1:
+            labels[car.car_id] = f"+{int(difference)} V"
+        elif track_length_m is not None and track_length_m > 0:
+            gap_m = difference * track_length_m
+            labels[car.car_id] = (
+                f"+{gap_m:.0f} m" if gap_m < 1000
+                else f"+{gap_m / 1000:.2f} km"
+            )
+    return labels
+
+
+def _car_display_name(car: CarTelemetry) -> str:
+    if car.display_name:
+        return car.display_name
+    if not car.car_name:
+        return "—"
+    return " ".join(
+        part.capitalize() for part in re.split(r"[_-]+", car.car_name) if part
+    )
+
+
+def _leaderboard_class_key(value: str | None) -> str:
+    return " ".join(value.split()).casefold() if value and value.strip() else "unclassified"
+
+
+def _leaderboard_class_label(value: str | None) -> str:
+    if not value or not value.strip():
+        return "Clase no disponible"
+    normalized = " ".join(value.split())
+    match = re.match(r"^(lmp[123]?|gt[1-4]|tcr|f1)\b", normalized, re.IGNORECASE)
+    return match.group(1).upper() if match else normalized
+
+
+def _track_length_from_ui_track(
+    track_root: Path, track: str, layout: str | None
+) -> float | None:
+    base = track_root / track
+    metadata_paths = []
+    if layout:
+        metadata_paths.append(base / "ui" / layout / "ui_track.json")
+    metadata_paths.append(base / "ui" / "ui_track.json")
+    for path in metadata_paths:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        value = raw.get("length")
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            length = float(value)
+            unit = "m"
+        elif isinstance(value, str):
+            match = re.fullmatch(
+                r"\s*(\d+(?:\.\d+)?)\s*(km|m)?\s*", value, re.IGNORECASE
+            )
+            if not match:
+                continue
+            length = float(match.group(1))
+            unit = (match.group(2) or "m").lower()
+        else:
+            continue
+        if unit == "km":
+            length *= 1000
+        if math.isfinite(length) and 100 <= length <= 100000:
+            return length
+    return None
 
 
 def _pedal_percent(value: float | None) -> float | None:
@@ -133,9 +260,14 @@ class RaceMapWidget(QWidget):
         self._track_key: tuple[str | None, str | None] | None = None
         self._pixmap = QPixmap()
         self._map_parameters: tuple[float, float, float, float] | None = None
+        self._track_length_m: float | None = None
         self._snapshot: TelemetrySnapshot | None = None
         self._trace: list[tuple[float, float, int | None]] = []
         self._message = "Selecciona la carpeta content/tracks de Assetto Corsa"
+
+    @property
+    def track_length_m(self) -> float | None:
+        return self._track_length_m
 
     def set_track_root(self, path: Path | None) -> None:
         self._track_root = path
@@ -169,6 +301,7 @@ class RaceMapWidget(QWidget):
     def _load_track_map(self) -> None:
         self._pixmap = QPixmap()
         self._map_parameters = None
+        self._track_length_m = None
         snapshot = self._snapshot
         if snapshot is None or self._track_root is None:
             if snapshot is not None and "assetto_corsa_python_api" not in snapshot.sources:
@@ -185,6 +318,9 @@ class RaceMapWidget(QWidget):
             self._message = "El juego no ha proporcionado un layout válido"
             return
         base = self._track_root / track
+        self._track_length_m = _track_length_from_ui_track(
+            self._track_root, track, layout
+        )
         folders = ([base / layout] if layout else []) + [base]
         for folder in folders:
             image = folder / "map.png"
@@ -214,17 +350,39 @@ class RaceMapWidget(QWidget):
         self._message = f"No se encontró map.png/map.ini para {track}"
 
     def _target_rect(self) -> QRectF:
-        bounds = self.rect().adjusted(16, 16, -16, -16)
+        bounds = self._map_bounds()
         if self._pixmap.isNull():
             return QRectF(bounds)
         size = self._pixmap.size()
-        size.scale(bounds.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        scale = min(bounds.width() / size.width(), bounds.height() / size.height())
+        width = size.width() * scale
+        height = size.height() * scale
         return QRectF(
-            bounds.left() + (bounds.width() - size.width()) / 2,
-            bounds.top() + (bounds.height() - size.height()) / 2,
-            size.width(),
-            size.height(),
+            bounds.left() + (bounds.width() - width) / 2,
+            bounds.top() + (bounds.height() - height) / 2,
+            width,
+            height,
         )
+
+    def _status_column_width(self) -> float:
+        return min(168.0, max(138.0, self.width() * 0.25))
+
+    def _map_bounds(self) -> QRectF:
+        bounds = QRectF(self.rect()).adjusted(16, 16, -16, -16)
+        column_width = min(self._status_column_width(), bounds.width() - 120.0)
+        left = bounds.left() + column_width + 10
+        return QRectF(left, bounds.top(), max(80.0, bounds.right() - left), bounds.height())
+
+    def _status_overlay_rects(self) -> tuple[QRectF, QRectF]:
+        column_width = self._status_column_width()
+        box_width = column_width - 12
+        first = QRectF(
+            self.rect().left() + 8, self.rect().top() + 8, box_width, 46
+        )
+        second = QRectF(
+            first.left(), first.bottom() + 8, box_width, first.height()
+        )
+        return first, second
 
     def _map_point(self, x: float | None, z: float | None,
                    target: QRectF) -> QPointF | None:
@@ -248,9 +406,11 @@ class RaceMapWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._pixmap.isNull():
             painter.setPen(QColor(COLORS["muted"]))
-            painter.drawText(self.rect().adjusted(20, 20, -20, -20),
+            painter.drawText(self._map_bounds().adjusted(8, 8, -8, -8),
                              Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
                              self._message)
+            if self._snapshot is not None:
+                self._draw_status_overlays(painter)
             return
 
         target = self._target_rect()
@@ -272,6 +432,7 @@ class RaceMapWidget(QWidget):
 
         if self._snapshot is None:
             return
+        positions = _ranking_positions(self._snapshot.cars)
         ordered_cars = sorted(self._snapshot.cars, key=lambda car: car.is_player)
         for car in ordered_cars:
             point = self._map_point(car.world_x, car.world_z, target)
@@ -289,7 +450,7 @@ class RaceMapWidget(QWidget):
             ))
             painter.setBrush(marker_color)
             painter.drawEllipse(point, 10, 10)
-            position = car.realtime_position or car.official_position
+            position = positions.get(car.car_id)
             if position is not None:
                 font = QFont()
                 font.setBold(True)
@@ -298,71 +459,283 @@ class RaceMapWidget(QWidget):
                 contrast = "#111318" if marker_color.lightness() > 155 else "#FFFFFF"
                 painter.setPen(QColor(contrast))
                 painter.drawText(
-                    QRectF(point.x() - 9, point.y() - 8, 18, 16),
+                    QRectF(point.x() - 11, point.y() - 8, 22, 16),
                     Qt.AlignmentFlag.AlignCenter,
-                    str(position),
+                    f"P{position}",
                 )
             if car.is_player:
                 painter.drawText(QRectF(point.x() + 8, point.y() - 10, 70, 20),
                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                  "TÚ")
+        self._draw_status_overlays(painter)
 
-
-class LeaderboardWidget(QTableWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(0, 6, parent)
-        self.setHorizontalHeaderLabels(
-            ("Pos.", "Piloto", "Coche", "Clase", "Vuelta", "Mejor")
-        )
-        self.verticalHeader().setVisible(False)
-        self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.setAlternatingRowColors(True)
-        self.setSortingEnabled(False)
-        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in (0, 2, 3, 4, 5):
-            self.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-
-    def set_snapshot(self, snapshot: TelemetrySnapshot | None) -> None:
-        self.setRowCount(0)
+    def _draw_status_overlays(self, painter: QPainter) -> None:
+        snapshot = self._snapshot
         if snapshot is None:
             return
-        if not snapshot.cars:
-            self.insertRow(0)
-            self.setSpan(0, 0, 1, 6)
-            self.setItem(0, 0, QTableWidgetItem(
-                "Sin datos de rivales; hace falta el complemento Python de Assetto Corsa."
-            ))
+        fastest_time = None
+        fastest_id = snapshot.fastest_lap_car_id
+        if fastest_id is not None:
+            fastest_car = next(
+                (car for car in snapshot.cars if car.car_id == fastest_id), None
+            )
+            fastest_time = _format_lap_time(
+                fastest_car.best_lap_time_ms if fastest_car else None
+            )
+        first, second = self._status_overlay_rects()
+        self._draw_overlay_box(
+            painter, first,
+            "VUELTAS RESTANTES",
+            str(snapshot.laps_remaining) if snapshot.laps_remaining is not None else "—",
+            COLORS["orange"],
+        )
+        self._draw_overlay_box(
+            painter, second,
+            "VUELTA RÁPIDA", fastest_time or "—", COLORS["purple"],
+        )
+
+    @staticmethod
+    def _draw_overlay_box(
+        painter: QPainter, rect: QRectF, title: str, value: str, accent: str
+    ) -> None:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(8, 10, 13, 225))
+        painter.drawRoundedRect(rect, 7, 7)
+        painter.setBrush(QColor(accent))
+        painter.drawRoundedRect(QRectF(rect.left(), rect.top(), 3, rect.height()), 1, 1)
+        painter.setPen(QColor(COLORS["muted"]))
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(7)
+        painter.setFont(title_font)
+        painter.drawText(
+            QRectF(rect.left() + 10, rect.top() + 4, rect.width() - 16, 13),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            title,
+        )
+        value_font = QFont()
+        value_font.setBold(True)
+        value_font.setPointSize(15)
+        painter.setFont(value_font)
+        painter.setPen(QColor(COLORS["text"]))
+        painter.drawText(
+            QRectF(rect.left() + 10, rect.top() + 16, rect.width() - 16, 25),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            value,
+        )
+
+
+class LeaderboardWidget(QScrollArea):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._content = QWidget()
+        self._content.setObjectName("leaderboardContent")
+        self._layout = QVBoxLayout(self._content)
+        self._layout.setContentsMargins(6, 6, 6, 6)
+        self._layout.setSpacing(8)
+        self._tables_by_class: dict[str, QTableWidget] = {}
+        self._headings_by_class: dict[str, QLabel] = {}
+        self._class_order: list[str] = []
+        self._group_signature: tuple[tuple[str, tuple[int, ...]], ...] = ()
+        self._empty_message: QLabel | None = None
+        self.setWidget(self._content)
+        self.setStyleSheet(
+            "QScrollArea { border: 0; background: transparent; } "
+            "QScrollArea QWidget#leaderboardContent { background: transparent; }"
+        )
+
+    @property
+    def class_tables(self) -> dict[str, QTableWidget]:
+        return dict(self._tables_by_class)
+
+    def _clear_groups(self) -> None:
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+        self._tables_by_class.clear()
+        self._headings_by_class.clear()
+        self._empty_message = None
+
+    def _create_table(
+        self,
+        class_key: str,
+        row_count: int,
+    ) -> QTableWidget:
+        table = QTableWidget(row_count, 5, self._content)
+        table.setObjectName(f"classLeaderboard_{class_key}")
+        table.setHorizontalHeaderLabels(("Pos.", "Piloto", "Coche", "Vueltas", "GAP"))
+        table.horizontalHeaderItem(0).setToolTip(
+            "Posición independiente dentro de esta categoría. Se ordena usando "
+            "una única fuente global completa y sin rangos duplicados."
+        )
+        table.horizontalHeaderItem(4).setToolTip(
+            "Distancia al siguiente coche de la misma categoría, derivada del "
+            "progreso normalizado y la longitud oficial del circuito."
+        )
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.setSortingEnabled(False)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        for column in (0, 3, 4):
+            table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents
+            )
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        table.setMinimumHeight(36 + row_count * 28)
+        table.setMaximumHeight(36 + row_count * 28)
+        return table
+
+    @staticmethod
+    def _update_table(
+        table: QTableWidget,
+        cars: list[CarTelemetry],
+        class_ranks: dict[int, int | None],
+        gaps: dict[int, str],
+        fastest_id: int | None,
+    ) -> None:
+        table.setUpdatesEnabled(False)
+        try:
+            for row, car in enumerate(cars):
+                class_position = class_ranks.get(car.car_id)
+                position_label = (
+                    f"P{class_position}" if class_position is not None else "—"
+                )
+                position_tooltip = ""
+                if car.finished is True:
+                    position_label += "  ✓"
+                    position_tooltip = "Finalizó la carrera"
+                elif car.finished is False:
+                    position_label += "  ▶"
+                    position_tooltip = "Sigue en carrera"
+                driver_name = car.driver_name or ("Jugador" if car.is_player else "—")
+                if car.is_player:
+                    driver_name = f"▶ {driver_name}"
+                values = (
+                    position_label,
+                    driver_name,
+                    _car_display_name(car),
+                    str(car.lap_count) if car.lap_count is not None else "—",
+                    "—" if class_position == 1 else gaps.get(car.car_id, "—"),
+                )
+                for column, value in enumerate(values):
+                    item = table.item(row, column)
+                    if item is None:
+                        item = QTableWidgetItem()
+                        table.setItem(row, column, item)
+                    if item.text() != value:
+                        item.setText(value)
+                    if column == 0 and item.toolTip() != position_tooltip:
+                        item.setToolTip(position_tooltip)
+                    if column == 1:
+                        color = QColor(
+                            COLORS["purple"] if car.car_id == fastest_id
+                            else COLORS["text"]
+                        )
+                        if item.foreground().color() != color:
+                            item.setForeground(color)
+        finally:
+            table.setUpdatesEnabled(True)
+
+    def set_snapshot(
+        self, snapshot: TelemetrySnapshot | None, track_length_m: float | None = None
+    ) -> None:
+        if snapshot is None:
+            if self._group_signature or self._empty_message is not None:
+                self._clear_groups()
+                self._group_signature = ()
+                self._class_order.clear()
             return
+        if not snapshot.cars:
+            if self._empty_message is None:
+                self._clear_groups()
+                self._group_signature = ()
+                self._class_order.clear()
+                self._empty_message = QLabel(
+                    "Sin datos de rivales; hace falta el complemento Python de Assetto Corsa."
+                )
+                self._empty_message.setWordWrap(True)
+                self._empty_message.setStyleSheet(
+                    f"color: {COLORS['muted']}; padding: 8px;"
+                )
+                self._layout.addWidget(self._empty_message)
+            return
+        positions = _ranking_positions(snapshot.cars)
         cars = sorted(snapshot.cars, key=lambda car: (
-            car.realtime_position is None and car.official_position is None,
-            car.realtime_position or car.official_position or 999,
+            positions.get(car.car_id) is None,
+            positions.get(car.car_id) or 999,
+            car.car_id,
         ))
         fastest_id = snapshot.fastest_lap_car_id
+        groups: dict[str, list[CarTelemetry]] = {}
+        labels: dict[str, str] = {}
         for car in cars:
-            row = self.rowCount()
-            self.insertRow(row)
-            position = car.realtime_position or car.official_position
-            values = (
-                str(position) if position is not None else "—",
-                car.driver_name or ("Jugador" if car.is_player else "—"),
-                car.car_name or "—",
-                car.vehicle_class or "—",
-                str(car.lap_count) if car.lap_count is not None else "—",
-                _format_lap_time(car.best_lap_time_ms),
+            class_key = _leaderboard_class_key(car.vehicle_class)
+            groups.setdefault(class_key, []).append(car)
+            labels.setdefault(class_key, _leaderboard_class_label(car.vehicle_class))
+
+        for class_key in groups:
+            if class_key not in self._class_order:
+                self._class_order.append(class_key)
+        class_keys = [key for key in self._class_order if key in groups]
+        signature = tuple(
+            (key, tuple(sorted(car.car_id for car in groups[key])))
+            for key in class_keys
+        )
+        if signature != self._group_signature:
+            self._clear_groups()
+            for class_key in class_keys:
+                class_cars = groups[class_key]
+                class_color = CLASS_COLORS.get(
+                    _class_key(class_cars[0].vehicle_class), COLORS["orange"]
+                )
+                heading = QLabel()
+                heading.setObjectName("classLeaderboardHeading")
+                heading.setStyleSheet(
+                    f"color: {class_color}; font-size: 13px; font-weight: 800; "
+                    "padding: 5px 3px; border-bottom: 1px solid #343B45;"
+                )
+                self._layout.addWidget(heading)
+                table = self._create_table(class_key, len(class_cars))
+                self._layout.addWidget(table)
+                self._headings_by_class[class_key] = heading
+                self._tables_by_class[class_key] = table
+            self._layout.addStretch(1)
+            self._group_signature = signature
+
+        for class_key in class_keys:
+            class_cars = groups[class_key]
+            known_positions = [
+                car for car in class_cars if positions.get(car.car_id) is not None
+            ]
+            class_ranks = {
+                car.car_id: index
+                for index, car in enumerate(known_positions, start=1)
+            }
+            if len(known_positions) == len(class_cars):
+                gaps = _gap_labels(tuple(class_cars), positions, track_length_m)
+            else:
+                gaps = {car.car_id: "—" for car in class_cars}
+
+            self._headings_by_class[class_key].setText(
+                f"{labels[class_key]}  ·  {len(class_cars)} coches"
             )
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                if column == 3 and car.vehicle_class:
-                    item.setForeground(QColor(_map_car_color(snapshot, car)))
-                if car.car_id == fastest_id:
-                    font = QFont(item.font())
-                    font.setBold(True)
-                    item.setFont(font)
-                    item.setForeground(QColor(COLORS["purple"]))
-                if car.is_player and column == 1:
-                    item.setText(f"▶ {value}")
-                self.setItem(row, column, item)
+            self._update_table(
+                self._tables_by_class[class_key],
+                class_cars,
+                class_ranks,
+                gaps,
+                fastest_id,
+            )
 
 
 class TelemetryTraceWidget(QWidget):

@@ -102,6 +102,8 @@ class TelemetryProtocolTests(unittest.TestCase):
         payload["cars"][0].update({
             "track_position": 0.25,
             "speed_kmh": 140.0,
+            "display_name": "Ferrari SF15-T",
+            "finished": False,
             "brand": "Ferrari",
             "vehicle_class": "GT3",
             "team_name": "Scuderia Ferrari",
@@ -111,6 +113,8 @@ class TelemetryProtocolTests(unittest.TestCase):
         car = parse_snapshot(json.dumps(payload), now=1000.0).cars[0]
         self.assertEqual(car.track_position, 0.25)
         self.assertEqual(car.speed_kmh, 140.0)
+        self.assertEqual(car.display_name, "Ferrari SF15-T")
+        self.assertIs(car.finished, False)
         self.assertEqual(car.brand, "Ferrari")
         self.assertEqual(car.vehicle_class, "GT3")
         self.assertEqual(car.team_name, "Scuderia Ferrari")
@@ -118,6 +122,18 @@ class TelemetryProtocolTests(unittest.TestCase):
 
         del payload["cars"][0]["team_color"]
         self.assertIsNone(parse_snapshot(json.dumps(payload), now=1000.0).cars[0].team_color)
+
+    def test_optional_display_name_and_finished_state_are_validated(self):
+        payload = json.loads(snapshot_payload())
+        payload["cars"][0]["finished"] = "finished"
+
+        with self.assertRaisesRegex(TelemetryValidationError, "finished must be boolean"):
+            parse_snapshot(json.dumps(payload), now=1000.0)
+
+        payload["cars"][0]["finished"] = True
+        car = parse_snapshot(json.dumps(payload), now=1000.0).cars[0]
+        self.assertIs(car.finished, True)
+        self.assertIsNone(car.display_name)
 
     def test_invalid_team_color_is_rejected(self):
         payload = json.loads(snapshot_payload())
